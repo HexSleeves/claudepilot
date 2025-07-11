@@ -1,6 +1,8 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -84,6 +86,21 @@ func (s *Session) GetStatus() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.Status
+}
+
+func (s *Session) SendInput(input string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// For now, this is a placeholder that simulates Claude processing
+	// In a real implementation, this would send the input to Claude API
+	s.AddOutput("🤖 Processing your request...")
+	
+	// Simulate a Claude response
+	response := fmt.Sprintf("Claude response to: %s", strings.ReplaceAll(strings.TrimSpace(input), "\n", " "))
+	s.AddOutput(response)
+	
+	s.UpdatedAt = time.Now()
 }
 
 func generateID() string {

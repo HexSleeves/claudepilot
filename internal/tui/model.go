@@ -245,29 +245,48 @@ func (m *Model) handleOutputKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 func (m *Model) handleInputKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
+		// Enter creates a new line
+		m.inputValue += "\n"
+
+	case "ctrl+enter":
+		// Ctrl+Enter submits the input
 		if strings.TrimSpace(m.inputValue) != "" && m.selectedSession != nil {
 			m.inputHistory = append(m.inputHistory, m.inputValue)
 			m.historyIndex = -1
 
-			m.selectedSession.AddOutput(fmt.Sprintf("> %s", m.inputValue))
-			m.selectedSession.AddOutput(fmt.Sprintf("Processing: %s", m.inputValue))
+			// Display the user input with proper formatting
+			inputLines := strings.Split(m.inputValue, "\n")
+			for i, line := range inputLines {
+				if i == 0 {
+					m.selectedSession.AddOutput(fmt.Sprintf("> %s", line))
+				} else {
+					m.selectedSession.AddOutput(fmt.Sprintf("  %s", line))
+				}
+			}
+
+			// Send to Claude session
+			m.selectedSession.SendInput(m.inputValue)
 
 			m.inputValue = ""
 			m.outputScroll = len(m.selectedSession.GetOutput())
 		}
 
 	case "up":
-		if len(m.inputHistory) > 0 {
+		// Only navigate history if not at start of input or input is empty
+		if len(m.inputHistory) > 0 && (m.inputValue == "" || !strings.Contains(m.inputValue, "\n")) {
 			if m.historyIndex == -1 {
 				m.historyIndex = len(m.inputHistory) - 1
 			} else if m.historyIndex > 0 {
 				m.historyIndex--
 			}
-			m.inputValue = m.inputHistory[m.historyIndex]
+			if m.historyIndex >= 0 && m.historyIndex < len(m.inputHistory) {
+				m.inputValue = m.inputHistory[m.historyIndex]
+			}
 		}
 
 	case "down":
-		if m.historyIndex != -1 {
+		// Only navigate history if input doesn't contain newlines or is at end
+		if m.historyIndex != -1 && !strings.Contains(m.inputValue, "\n") {
 			if m.historyIndex < len(m.inputHistory)-1 {
 				m.historyIndex++
 				m.inputValue = m.inputHistory[m.historyIndex]
@@ -280,6 +299,17 @@ func (m *Model) handleInputKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "backspace":
 		if len(m.inputValue) > 0 {
 			m.inputValue = m.inputValue[:len(m.inputValue)-1]
+		}
+
+	case "ctrl+backspace":
+		// Delete word backwards
+		if len(m.inputValue) > 0 {
+			words := strings.Fields(m.inputValue)
+			if len(words) > 0 {
+				lastWord := words[len(words)-1]
+				m.inputValue = m.inputValue[:len(m.inputValue)-len(lastWord)]
+				m.inputValue = strings.TrimRight(m.inputValue, " ")
+			}
 		}
 
 	default:
@@ -538,9 +568,37 @@ func (m *Model) renderOutputPane(width, height int) string {
 
 func (m *Model) renderInputPane(width, height int) string {
 	prompt := m.styles.InputPrompt.Render("➤ ")
-	input := m.styles.InputField.Render(m.inputValue + "█")
 
-	content := prompt + input
+	// Handle multiline input display
+	inputText := m.inputValue
+	if m.focusedPane == InputPane {
+		inputText += "█" // Show cursor only when focused
+	}
+
+	// Split input into lines and format each line
+	lines := strings.Split(inputText, "\n")
+	var formattedLines []string
+
+	for i, line := range lines {
+		if i == 0 {
+			// First line gets the prompt
+			formattedLines = append(formattedLines, prompt+m.styles.InputField.Render(line))
+		} else {
+			// Subsequent lines are indented
+			indentedPrompt := strings.Repeat(" ", len("➤ "))
+			formattedLines = append(formattedLines, indentedPrompt+m.styles.InputField.Render(line))
+		}
+	}
+
+	content := strings.Join(formattedLines, "\n")
+
+	// Add scroll if content is too tall for the pane
+	availableHeight := height - 3 // Account for title and borders
+	if len(formattedLines) > availableHeight {
+		// Show last lines that fit
+		start := len(formattedLines) - availableHeight
+		content = strings.Join(formattedLines[start:], "\n")
+	}
 
 	var borderStyle lipgloss.Style
 	if m.focusedPane == InputPane {
@@ -574,7 +632,7 @@ func (m *Model) renderFooter() string {
 	if m.focusedPane == SessionListPane {
 		keys = append(keys, "n: New", "d: Delete", "s: Start/Stop", "Click: Select session")
 	} else if m.focusedPane == InputPane {
-		keys = append(keys, "Enter: Send", "↑/↓: History")
+		keys = append(keys, "Enter: New line", "Ctrl+Enter: Send", "↑/↓: History")
 	} else if m.focusedPane == OutputPane {
 		keys = append(keys, "j/k: Scroll", "g/G: Top/Bottom", "Wheel: Scroll")
 	}
@@ -612,9 +670,11 @@ func (m *Model) renderHelp() string {
 		"  Scroll wheel       Scroll output",
 		"",
 		m.styles.HelpKey.Render("Input Pane (Bottom Right):"),
-		"  Enter              Send message to Claude",
+		"  Enter              Create new line",
+		"  Ctrl+Enter         Send message to Claude",
 		"  ↑ / ↓              Navigate command history",
 		"  Backspace          Delete character",
+		"  Ctrl+Backspace     Delete word backward",
 		"",
 		m.styles.InfoText.Render("Press '?' or 'Esc' to close this help"),
 	}
