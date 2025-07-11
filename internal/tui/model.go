@@ -40,6 +40,11 @@ type Model struct {
 	// UI components
 	styles *Styles
 
+	// Panel boundaries for mouse interaction
+	sessionListBounds struct{ x, y, width, height int }
+	outputPaneBounds  struct{ x, y, width, height int }
+	inputPaneBounds   struct{ x, y, width, height int }
+
 	// Application state
 	quitting bool
 }
@@ -63,7 +68,7 @@ func NewModel() *Model {
 	session3.AddOutput("Error: Connection failed to Claude API")
 	session3.AddOutput("Retrying connection...")
 
-	return &Model{
+	model := &Model{
 		sessionManager:  sessionManager,
 		selectedSession: session1,
 		sessionCursor:   0,
@@ -72,6 +77,11 @@ func NewModel() *Model {
 		inputHistory:    make([]string, 0),
 		historyIndex:    -1,
 	}
+
+	// Initialize panel bounds for mouse interaction
+	model.updatePanelBounds()
+
+	return model
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -83,6 +93,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.updatePanelBounds()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -90,6 +101,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleHelpKeys(msg)
 		}
 		return m.handleKeys(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
 	return m, nil
@@ -277,6 +291,117 @@ func (m *Model) handleInputKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) updatePanelBounds() {
+	if m.width < 60 || m.height < 15 {
+		return
+	}
+
+	leftWidth := m.width / 3
+	rightWidth := m.width - leftWidth - 2
+
+	// Session list bounds (left panel)
+	m.sessionListBounds.x = 0
+	m.sessionListBounds.y = 2 // After title
+	m.sessionListBounds.width = leftWidth
+	m.sessionListBounds.height = m.height - 4 // Account for title and footer
+
+	// Output pane bounds (top right)
+	m.outputPaneBounds.x = leftWidth + 2
+	m.outputPaneBounds.y = 2 // After title
+	m.outputPaneBounds.width = rightWidth
+	m.outputPaneBounds.height = m.height/2 - 2
+
+	// Input pane bounds (bottom right)
+	m.inputPaneBounds.x = leftWidth + 2
+	m.inputPaneBounds.y = 2 + m.height/2 - 2
+	m.inputPaneBounds.width = rightWidth
+	m.inputPaneBounds.height = m.height - m.height/2 - 4
+}
+
+func (m *Model) handleMouse(msg tea.MouseMsg) (*Model, tea.Cmd) {
+	if m.showHelp {
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.MouseLeft:
+		// Check which panel was clicked
+		if m.isPointInBounds(msg.X, msg.Y, m.sessionListBounds) {
+			m.focusedPane = SessionListPane
+			// Handle session list clicks
+			return m.handleSessionListClick(msg.X, msg.Y)
+		} else if m.isPointInBounds(msg.X, msg.Y, m.outputPaneBounds) {
+			m.focusedPane = OutputPane
+		} else if m.isPointInBounds(msg.X, msg.Y, m.inputPaneBounds) {
+			m.focusedPane = InputPane
+		}
+
+	case tea.MouseWheelUp:
+		if m.isPointInBounds(msg.X, msg.Y, m.outputPaneBounds) && m.focusedPane == OutputPane {
+			if m.outputScroll > 0 {
+				m.outputScroll--
+			}
+		} else if m.isPointInBounds(msg.X, msg.Y, m.sessionListBounds) && m.focusedPane == SessionListPane {
+			sessions := m.sessionManager.GetSessions()
+			if m.sessionCursor > 0 {
+				m.sessionCursor--
+				m.selectedSession = sessions[m.sessionCursor]
+				m.outputScroll = 0
+			}
+		}
+
+	case tea.MouseWheelDown:
+		if m.isPointInBounds(msg.X, msg.Y, m.outputPaneBounds) && m.focusedPane == OutputPane {
+			if m.selectedSession != nil {
+				output := m.selectedSession.GetOutput()
+				maxScroll := len(output) - m.getOutputHeight() + 2
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.outputScroll < maxScroll {
+					m.outputScroll++
+				}
+			}
+		} else if m.isPointInBounds(msg.X, msg.Y, m.sessionListBounds) && m.focusedPane == SessionListPane {
+			sessions := m.sessionManager.GetSessions()
+			if m.sessionCursor < len(sessions)-1 {
+				m.sessionCursor++
+				m.selectedSession = sessions[m.sessionCursor]
+				m.outputScroll = 0
+			}
+		}
+	}
+
+	return m, nil
+}
+
+func (m *Model) isPointInBounds(x, y int, bounds struct{ x, y, width, height int }) bool {
+	return x >= bounds.x && x < bounds.x+bounds.width &&
+		y >= bounds.y && y < bounds.y+bounds.height
+}
+
+func (m *Model) handleSessionListClick(x, y int) (*Model, tea.Cmd) {
+	sessions := m.sessionManager.GetSessions()
+	if len(sessions) == 0 {
+		return m, nil
+	}
+
+	// Calculate which session was clicked
+	// Account for title (1 line) and border
+	relativeY := y - m.sessionListBounds.y - 2 // Subtract title and border
+
+	// Each session takes up 2 lines (name + preview)
+	sessionIndex := relativeY / 2
+
+	if sessionIndex >= 0 && sessionIndex < len(sessions) {
+		m.sessionCursor = sessionIndex
+		m.selectedSession = sessions[sessionIndex]
+		m.outputScroll = 0
+	}
+
+	return m, nil
+}
+
 func (m *Model) getOutputHeight() int {
 	return m.height - 8 // Account for borders, input pane, and title
 }
@@ -441,16 +566,17 @@ func (m *Model) renderInputPane(width, height int) string {
 func (m *Model) renderFooter() string {
 	keys := []string{
 		"Tab: Switch panes",
+		"Mouse: Click panels/scroll",
 		"?: Help",
 		"Ctrl+C: Quit",
 	}
 
 	if m.focusedPane == SessionListPane {
-		keys = append(keys, "n: New", "d: Delete", "s: Start/Stop")
+		keys = append(keys, "n: New", "d: Delete", "s: Start/Stop", "Click: Select session")
 	} else if m.focusedPane == InputPane {
 		keys = append(keys, "Enter: Send", "↑/↓: History")
 	} else if m.focusedPane == OutputPane {
-		keys = append(keys, "j/k: Scroll", "g/G: Top/Bottom")
+		keys = append(keys, "j/k: Scroll", "g/G: Top/Bottom", "Wheel: Scroll")
 	}
 
 	return m.styles.InfoText.Render(strings.Join(keys, "  |  "))
@@ -465,18 +591,25 @@ func (m *Model) renderHelp() string {
 		"  ?                  Show/hide this help",
 		"  Ctrl+C             Quit application",
 		"",
+		m.styles.HelpKey.Render("Mouse Controls:"),
+		"  Click              Focus panel and select items",
+		"  Scroll Wheel       Navigate lists and scroll output",
+		"  Click sessions     Select different sessions",
+		"",
 		m.styles.HelpKey.Render("Session List (Left Pane):"),
 		"  j / ↓              Move cursor down",
 		"  k / ↑              Move cursor up",
 		"  n                  Create new session",
 		"  d / x              Delete selected session",
 		"  s                  Start/stop selected session",
+		"  Click session      Select session",
 		"",
 		m.styles.HelpKey.Render("Output Pane (Top Right):"),
 		"  j / ↓              Scroll down",
 		"  k / ↑              Scroll up",
 		"  g                  Go to top",
 		"  G                  Go to bottom",
+		"  Scroll wheel       Scroll output",
 		"",
 		m.styles.HelpKey.Render("Input Pane (Bottom Right):"),
 		"  Enter              Send message to Claude",
