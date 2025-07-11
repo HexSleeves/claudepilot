@@ -4,6 +4,10 @@
 build:
 	go build -o bin/claude-session-manager ./cmd/claude-session-manager
 
+# Run the application in development mode
+run-dev:
+	go run ./cmd/claude-session-manager/main.go
+
 # Run tests
 test:
 	go test -v ./...
